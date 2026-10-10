@@ -12,10 +12,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DATA_COORDINATOR, DOMAIN
 from .entity import HondaLinkEntity
 from .util import (
-    find_12v_battery_candidates,
     find_12v_battery_status,
     get_path,
-    leaf_paths,
     parse_iso_datetime,
     status_body,
     to_float,
@@ -69,11 +67,6 @@ SENSORS: tuple[HondaLinkSensorDescription, ...] = (
         key="12v_battery_status",
         translation_key="12v_battery_status",
         value_fn=find_12v_battery_status,
-        attr_fn=lambda body: {
-            "battery_candidates": find_12v_battery_candidates(body),
-            "dashboard_keys": sorted(body.keys()),
-            "dashboard_leaf_paths": leaf_paths(body),
-        },
     ),
     HondaLinkSensorDescription(
         key="front_left_tire_pressure",
