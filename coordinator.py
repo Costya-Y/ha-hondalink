@@ -6,10 +6,10 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import HondaLinkAPI, HondaLinkCommandError, HondaLinkError
+from .api import HondaLinkAPI, HondaLinkAuthError, HondaLinkCommandError, HondaLinkError
 from .const import CONF_SCAN_INTERVAL, CONF_VIN, DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,19 +17,26 @@ _LOGGER = logging.getLogger(__name__)
 
 class HondaLinkDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, api: HondaLinkAPI) -> None:
+        self.entry = entry
         self.api = api
         self.vin = entry.data[CONF_VIN]
-        interval = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
+        interval = max(1, min(1440, int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))))
         super().__init__(
             hass,
             logging.getLogger(__name__),
-            name=f"{DOMAIN}-{self.vin}",
+            name=DOMAIN,
             update_interval=timedelta(minutes=interval),
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            return await self.api.async_get_dashboard_latest(self.vin)
+            data = await self.api.async_get_dashboard_latest(self.vin)
+            auth_data = self.api.export_auth_data()
+            if any(self.entry.data.get(k) != v for k, v in auth_data.items()):
+                self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, **auth_data})
+            return data
+        except HondaLinkAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
         except HondaLinkError as err:
             raise UpdateFailed(str(err)) from err
 

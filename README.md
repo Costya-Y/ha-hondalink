@@ -1,3 +1,10 @@
+> **Fork status:** Security and reliability work in progress. AcuraLink and 2026 MDX
+> compatibility have **not** been validated. This fork still uses HondaLink app
+> identity settings and must not be presented as a working AcuraLink integration.
+> See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for findings and deployment limits.
+>
+> Fork of [daviddelahoz/ha-hondalink](https://github.com/daviddelahoz/ha-hondalink).
+
 <p align="center">
   <img src="assets/logo.png" alt="HondaLink Home Assistant integration logo" width="180">
 </p>
@@ -109,7 +116,7 @@ The default lock command is `alk`; the default unlock command is `dulk`.
 
 ### Could not connect to HondaLink
 
-Restart Home Assistant after updating the custom component, then try setup again. The config flow logs the HondaLink response in a redacted form, so check Home Assistant logs for:
+Restart Home Assistant after updating the custom component, then try setup again. The config flow logs a generic error and, where relevant, an allowlisted error code, so check Home Assistant logs for:
 
 ```text
 HondaLink connection failed during config flow
