@@ -160,6 +160,71 @@ class ErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('123',summary)
         self.assertNotIn('secret',api_module._redact_payload({'errorCode':'secret'}))
 
+class CommandResultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_in_progress_submission_waits_for_completion_without_resending(self):
+        api = client()
+        api._request_api = AsyncMock(side_effect=[
+            {"status":"in_progress", "responseBody":{"cigServiceRequestId":"test-request"}},
+            {"status":"success", "responseBody":{"commandStatus":"in_progress"}},
+            {"status":"success", "responseBody":{"commandStatus":"completed"}},
+        ])
+        result = await api._async_cig_command('eng', 'srt', {}, poll_interval=0)
+        self.assertEqual(result.response['responseBody']['commandStatus'], 'completed')
+        self.assertEqual([c.args[0] for c in api._request_api.await_args_list], ['POST','GET','GET'])
+
+    async def test_success_envelope_does_not_hide_pending_command(self):
+        api = client()
+        api._request_api = AsyncMock(side_effect=[
+            {"status":"success", "responseBody":{"commandStatus":"in_progress"}},
+            {"status":"success", "responseBody":{"commandStatus":"completed"}},
+        ])
+        result = await api._poll_cig_result('eng','test-request',1,0)
+        self.assertEqual(result['responseBody']['commandStatus'],'completed')
+        self.assertEqual(api._request_api.await_count,2)
+
+    async def test_success_envelope_does_not_hide_failed_command(self):
+        api = client()
+        api._request_api = AsyncMock(return_value={
+            "status":"success", "responseBody":{"commandStatus":"failed","errorCode":"0001-01-1151","errorMessage":"private-password"}
+        })
+        with self.assertRaisesRegex(Error, 'Command result failed') as caught:
+            await api._poll_cig_result('eng','test-request',1,0)
+        self.assertIn('0001-01-1151',str(caught.exception))
+        self.assertNotIn('private-password',str(caught.exception))
+
+    async def test_pending_without_request_id_is_not_success(self):
+        api=client()
+        api._request_api=AsyncMock(return_value={"status":"in_progress","responseBody":{}})
+        with self.assertRaisesRegex(Error,'completion unconfirmed'):
+            await api._async_cig_command('eng','srt',{})
+        self.assertEqual(api._request_api.await_count,1)
+
+    async def test_empty_response_is_not_success(self):
+        api=client()
+        api._request_api=AsyncMock(return_value={})
+        with self.assertRaisesRegex(Error,'no result details'):
+            await api._async_cig_command('eng','srt',{})
+        self.assertEqual(api._request_api.await_count,1)
+
+    async def test_submission_failure_has_stage_and_safe_diagnostics(self):
+        api=client()
+        api._request_api=AsyncMock(return_value={"status":"failed","responseBody":{"errorCode":"0x01130010","errorMessage":"private-pin"}})
+        with self.assertRaisesRegex(Error,'Command submission rejected') as caught:
+            await api._async_cig_command('eng','srt',{})
+        self.assertIn('0x01130010',str(caught.exception))
+        self.assertNotIn('private-pin',str(caught.exception))
+
+    async def test_body_status_used_when_command_status_absent(self):
+        api=client()
+        api._request_api=AsyncMock(return_value={"status":"success","responseBody":{"status":"failed"}})
+        with self.assertRaisesRegex(Error,'Command result failed'):
+            await api._poll_cig_result('eng','test-request',1,0)
+
+    def test_untrusted_status_and_numeric_pin_are_not_logged(self):
+        summary=api_module._redact_payload({"status":"private-token","errorCode":"1234","responseBody":{"commandStatus":"private-email@example.invalid"}})
+        self.assertEqual(summary,'response details omitted')
+
+
 class LockTests(unittest.TestCase):
     def body(self, *states):
         return {'doorStatus':{key:{'lockState':state} for key,state in zip(('firstRowDriver','firstRowPassenger','secondRowDriver','secondRowPassenger'), states)}}

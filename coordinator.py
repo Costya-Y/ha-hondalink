@@ -74,5 +74,6 @@ class HondaLinkDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             await command()
         except HondaLinkCommandError as err:
+            _LOGGER.warning("HondaLink %s failed: %s", command.__name__, err)
             raise HomeAssistantError(str(err)) from err
         await self.async_request_refresh()
