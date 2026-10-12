@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -40,6 +41,11 @@ from .const import (
 
 _DYNAMIC_BACKEND_ERROR_CODE = "0x01130009"
 _INVALID_SCOPE_ERROR_CODE = "0001-01-1150"
+_COMMAND_SUCCESS = {"success", "completed", "complete", "ok"}
+_COMMAND_PENDING = {"in_progress", "pending", "queued", "accepted", "processing"}
+_COMMAND_FAILURE = {"failure", "failed", "error", "rejected", "denied", "expired", "cancelled"}
+# Only structured vendor error codes, never free-form strings or bare PINs.
+_ERROR_CODE = re.compile(r"(?:[1-5][0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{4}|0x[0-9a-fA-F]{8})")
 
 
 class HondaLinkError(Exception):
@@ -83,17 +89,22 @@ def _is_invalid_scope_error(err: Exception) -> bool:
 def _redact_payload(value: Any) -> str:
     """Never include remote text or vehicle/account data in exceptions.
 
-    Only known codes required by compatibility fallbacks are disclosed.
+    Only constrained vendor error codes and known status values are disclosed.
     Even an errorMessage can echo a password, VIN, PIN, or location.
     """
     codes: set[str] = set()
+    statuses: set[str] = set()
 
     def visit(item: Any) -> None:
         if isinstance(item, dict):
             for key, child in item.items():
                 if str(key).lower() == "errorcode" and isinstance(child, (str, int)):
-                    if str(child) in {_DYNAMIC_BACKEND_ERROR_CODE, _INVALID_SCOPE_ERROR_CODE, "401"}:
+                    if _ERROR_CODE.fullmatch(str(child)):
                         codes.add(str(child))
+                elif str(key).lower() in {"status", "commandstatus", "request_status"}:
+                    status = _lower_status(child)
+                    if status in _COMMAND_SUCCESS | _COMMAND_PENDING | _COMMAND_FAILURE:
+                        statuses.add(status)
                 elif isinstance(child, (dict, list)):
                     visit(child)
         elif isinstance(item, list):
@@ -101,7 +112,21 @@ def _redact_payload(value: Any) -> str:
                 visit(child)
 
     visit(value)
-    return "error codes: " + ", ".join(sorted(codes)) if codes else "response details omitted"
+    parts = []
+    if codes:
+        parts.append("error codes: " + ", ".join(sorted(codes)))
+    if statuses:
+        parts.append("status: " + ", ".join(sorted(statuses)))
+    return "; ".join(parts) if parts else "response details omitted"
+
+
+def _command_status(data: dict[str, Any]) -> str:
+    """An HTTP/API envelope success does not mean the vehicle command finished."""
+    outer = _lower_status(data.get("status"))
+    body = data.get("responseBody")
+    if not isinstance(body, dict) or outer in _COMMAND_FAILURE:
+        return outer
+    return _lower_status(body.get("commandStatus") or body.get("status")) or outer
 
 
 class HondaLinkAPI:
@@ -360,15 +385,20 @@ class HondaLinkAPI:
             )
         except HondaLinkError as err:
             raise HondaLinkCommandError(str(err)) from err
-        response_body = data.get("responseBody") or {}
+        response_body = data.get("responseBody")
+        if not isinstance(response_body, dict):
+            raise HondaLinkCommandError(f"Command submission returned no result details: {_redact_payload(data)}")
         request_id = response_body.get("cigServiceRequestId")
-        status = _lower_status(data.get("status"))
+        status = _command_status(data)
 
-        if status not in ("success", ""):
-            message = _redact_payload(data)
-            raise HondaLinkCommandError(message)
+        if status not in _COMMAND_SUCCESS | _COMMAND_PENDING | {""}:
+            raise HondaLinkCommandError(f"Command submission rejected: {_redact_payload(data)}")
 
         if not request_id:
+            if status in _COMMAND_PENDING or not status:
+                raise HondaLinkCommandError(
+                    f"Command completion unconfirmed: no request ID; {_redact_payload(data)}"
+                )
             return HondaLinkCommandResult(None, data)
 
         result = await self._poll_cig_result(engine, request_id, timeout, poll_interval)
@@ -390,14 +420,12 @@ class HondaLinkAPI:
                 f"/REST/NGT/CIG/{engine}/results/{request_id}",
             )
             last_data = data
-            response_body = data.get("responseBody") or {}
-            status = _lower_status(data.get("status") or response_body.get("status") or response_body.get("commandStatus"))
+            status = _command_status(data)
 
-            if status in ("success", "completed", "complete", "ok"):
+            if status in _COMMAND_SUCCESS:
                 return data
-            if status in ("failure", "failed", "error"):
-                message = _redact_payload(data)
-                raise HondaLinkCommandError(message)
+            if status in _COMMAND_FAILURE:
+                raise HondaLinkCommandError(f"Command result failed: {_redact_payload(data)}")
 
             await asyncio.sleep(poll_interval)
 

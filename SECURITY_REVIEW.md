@@ -16,7 +16,7 @@ telemetry. Physical vehicle commands require a separate deliberate test.
 - **High — sensitive data in errors:** invalid JSON, command failures, and polling
   timeouts exposed remote response bodies. Error messages could contain account
   data, VIN, location, PIN, or tokens even when selected keys were redacted.
-  Errors now omit remote text and preserve only explicitly known error codes.
+  Errors now omit remote text and preserve only constrained vendor error-code formats and known status values.
   VIN was also removed from a setup warning and the coordinator log name.
 - **High — credentials across redirects:** HTTP requests followed redirects,
   potentially forwarding form data or custom authentication headers. Redirects
@@ -80,3 +80,19 @@ Tests cover response privacy, redirect refusal, timeouts, malformed response han
 HTTP/body 401 retry bounds, no 403/network replay, concurrent login, command errors,
 and partial door-lock telemetry. Home Assistant UI/lifecycle and live vehicle tests
 remain required before deployment. Upstream HACS and hassfest workflows are retained.
+
+## Remote-command follow-up (0.1.5)
+
+Remote commands now accept an in-progress submission and wait for its result.
+Nested command status takes precedence over a successful API envelope, preventing
+premature success and hidden vehicle-command failures. Pending replies without a
+request ID fail as unconfirmed instead of succeeding or being resubmitted.
+
+Diagnostics identify submission versus result failure and retain only known status
+values and narrowly formatted vendor codes. Raw messages, VINs, passwords, PINs,
+and location are still omitted. Direct Home Assistant and HomeKit failures are
+logged through the coordinator. No physical vehicle commands were used in testing.
+
+28 offline tests pass. The additional tests reproduce seven failures on 0.1.4;
+this confirms code defects, not the cause of a particular live vehicle failure.
+A user-initiated remote-start attempt is needed to validate the vehicle behavior.
